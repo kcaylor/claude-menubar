@@ -295,7 +295,7 @@ def try_background_update():
 
 # SwiftBar: color=light_mode,dark_mode — force readable text in both themes
 STYLE = "color=#000000,#ffffff size=13"
-HINT_STYLE = "color=#222222,#dddddd size=12"
+HINT_STYLE = "color=#000000,#ffffff size=12"
 
 
 def pace_dot(score: float) -> str:
@@ -309,6 +309,17 @@ def pace_dot(score: float) -> str:
         return "🔴"
 
 
+def pace_label(score: float) -> str:
+    if score >= 0.8:
+        return "On pace"
+    elif score >= 0.5:
+        return "Burning fast"
+    elif score >= 0.25:
+        return "Slow down"
+    else:
+        return "⚠️ Near limit"
+
+
 def format_tier_line(label: str, tier: dict) -> str:
     rpct = tier.get("remaining_pct", -1)
     tpct = tier.get("time_remaining_pct", 50)
@@ -317,30 +328,15 @@ def format_tier_line(label: str, tier: dict) -> str:
     if rpct < 0:
         return f"⚪  {label}:  No data | {STYLE}"
 
-    dot = pace_dot(pace_score(rpct, tpct))
+    score = pace_score(rpct, tpct)
+    dot = pace_dot(score)
+    pace = pace_label(score)
 
     if "spent" in tier and "cap" in tier:
         remaining = max(0, tier["cap"] - tier["spent"])
-        return f"{dot}  {label}:  ${remaining:.2f} / ${tier['cap']:.2f}  ·  resets {reset} | {STYLE}"
+        return f"{dot}  {label}:  ${remaining:.2f} / ${tier['cap']:.2f}  ·  {pace}  ·  resets {reset} | {STYLE}"
 
-    return f"{dot}  {label}:  {rpct:.0f}% remaining  ·  resets {reset} | {STYLE}"
-
-
-def format_pace_hint(tier: dict) -> str:
-    rpct = tier.get("remaining_pct", -1)
-    tpct = tier.get("time_remaining_pct", 50)
-    if rpct < 0:
-        return ""
-    score = pace_score(rpct, tpct)
-    if score >= 0.8:
-        msg = "↳ Comfortable pace"
-    elif score >= 0.5:
-        msg = "↳ Burning a bit fast"
-    elif score >= 0.25:
-        msg = "↳ Slow down to avoid hitting limit"
-    else:
-        msg = "⚠️ Near limit — conserve usage"
-    return f"{msg} | {HINT_STYLE}"
+    return f"{dot}  {label}:  {rpct:.0f}%  ·  {pace}  ·  resets {reset} | {STYLE}"
 
 
 def main():
@@ -378,23 +374,14 @@ def main():
 
         # Session
         print(format_tier_line("Session", s))
-        hint = format_pace_hint(s)
-        if hint:
-            print(hint)
         print("---")
 
         # Weekly
         print(format_tier_line("Weekly", w))
-        hint = format_pace_hint(w)
-        if hint:
-            print(hint)
         print("---")
 
         # Extra
         print(format_tier_line("Extra", e))
-        hint = format_pace_hint(e)
-        if hint:
-            print(hint)
         print("---")
 
     # Actions
