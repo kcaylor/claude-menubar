@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Usage History</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3/dist/chartjs-plugin-annotation.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', 'Helvetica Neue', sans-serif;
+    background: #0f0f0f;
+    color: #e0e0e0;
+    padding: 20px;
+    min-height: 100vh;
+  }
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid #2a2a2a;
+  }
+  .header h1 { font-size: 22px; font-weight: 600; color: #fff; }
+  .header h1 span { color: #f5a623; }
+  .header .updated { font-size: 13px; color: #888; }
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: #1a1a1a;
+    border-radius: 12px;
+    padding: 16px 20px;
+    border: 1px solid #2a2a2a;
+  }
+  .stat-card .label {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #888;
+    margin-bottom: 6px;
+  }
+  .stat-card .value { font-size: 28px; font-weight: 700; }
+  .stat-card .sub { font-size: 12px; color: #666; margin-top: 4px; }
+  .green { color: #34c759; }
+  .yellow { color: #ffcc00; }
+  .red { color: #ff3b30; }
+  .chart-container {
+    background: #1a1a1a;
+    border-radius: 12px;
+    padding: 20px;
+    border: 1px solid #2a2a2a;
+    margin-bottom: 16px;
+  }
+  .chart-container h2 { font-size: 15px; font-weight: 600; color: #ccc; margin-bottom: 4px; }
+  .chart-container .chart-sub { font-size: 12px; color: #666; margin-bottom: 12px; }
+  .chart-wrapper { position: relative; height: 220px; }
+  .range-buttons { display: flex; gap: 8px; margin-bottom: 20px; }
+  .range-buttons button {
+    background: #2a2a2a;
+    border: 1px solid #3a3a3a;
+    color: #ccc;
+    padding: 6px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .range-buttons button:hover { background: #3a3a3a; color: #fff; }
+  .range-buttons button.active {
+    background: #f5a623;
+    border-color: #f5a623;
+    color: #000;
+    font-weight: 600;
+  }
+  .footer { text-align: center; padding: 16px; color: #555; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>⚡ <span>Claude</span> Usage History</h1>
+  <div class="updated" id="lastUpdated"></div>
+</div>
+
+<div class="stats-row" id="statsRow"></div>
+
+<div class="range-buttons" id="rangeButtons">
+  <button data-range="session" class="active">This Session</button>
+  <button data-range="today">Today</button>
+  <button data-range="24h">24 Hours</button>
+  <button data-range="week">This Week</button>
+  <button data-range="lastweek">Last Week</button>
+  <button data-range="all">All Data</button>
+</div>
+
+<div class="chart-container" id="sessionChartBox">
+  <h2 id="sessionChartTitle">Session Usage</h2>
+  <div class="chart-sub" id="sessionChartSub">Usage remaining — higher is better</div>
+  <div class="chart-wrapper"><canvas id="sessionChart"></canvas></div>
+</div>
+
+<div class="chart-container" id="weeklyChartBox">
+  <h2>Weekly Usage</h2>
+  <div class="chart-sub">All models · Sonnet — remaining % this week</div>
+  <div class="chart-wrapper"><canvas id="weeklyChart"></canvas></div>
+</div>
+
+<div class="chart-container">
+  <h2>Monthly Extra Spend ($)</h2>
+  <div class="chart-sub">Cumulative spend against monthly cap</div>
+  <div class="chart-wrapper"><canvas id="spendChart"></canvas></div>
+</div>
+
+<div class="footer">
+  Data from ~/.config/claude-menubar/history.jsonl · Refreshed on page load
+</div>
+
+<script>
+let RAW_DATA = [];
+
+async function loadData() {
+  try {
+    const resp = await fetch('data.json');
+    RAW_DATA = await resp.json();
+  } catch {
+    if (typeof INLINE_DATA !== 'undefined') RAW_DATA = INLINE_DATA;
+  }
+  if (RAW_DATA.length === 0) {
+    document.body.innerHTML = '<div style="padding:40px;text-align:center;color:#888">No data.</div>';
+    return;
+  }
+  initDashboard();
+}
+
+function initDashboard() {
+  updateStats();
+  setupRangeButtons();
+  renderAll('session');
+}
+
+function parseTS(entry) {
+  const ts = entry.ts || entry.updated_at || '';
+  return ts ? new Date(ts) : null;
+}
+
+// ── Time helpers ──
+function fmtDuration(ms) {
+  if (ms <= 0) return 'now';
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  if (h > 24) return `${Math.round(h/24)}d ${h%24}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function getSessionResetAt() {
+  // Find the latest entry with a session reset_at
+  for (let i = RAW_DATA.length - 1; i >= 0; i--) {
+    const r = RAW_DATA[i]?.session?.reset_at;
+    if (r) return new Date(r);
+  }
+  // Fallback: 5h from last data point
+  const last = parseTS(RAW_DATA[RAW_DATA.length - 1]);
+  return last ? new Date(last.getTime() + 5*3600000) : null;
+}
+
+function getWeeklyResetAt() {
+  for (let i = RAW_DATA.length - 1; i >= 0; i--) {
+    const r = RAW_DATA[i]?.weekly?.reset_at;
+    if (r) return new Date(r);
+  }
+  return null;
+}
+
+function getExtraResetAt() {
+  for (let i = RAW_DATA.length - 1; i >= 0; i--) {
+    const r = RAW_DATA[i]?.extra?.reset_at;
+    if (r) return new Date(r);
+  }
+  return null;
+}
+
+// ── Filtering ──
+function filterByRange(range) {
+  const now = new Date();
+  let cutoff, ceiling;
+  switch(range) {
+    case 'session': cutoff = new Date(now - 5*3600*1000); break;
+    case 'today':
+      cutoff = new Date(now); cutoff.setHours(0,0,0,0); break;
+    case '24h': cutoff = new Date(now - 24*3600*1000); break;
+    case 'week':
+      cutoff = new Date(now);
+      cutoff.setDate(cutoff.getDate() - cutoff.getDay());
+      cutoff.setHours(0,0,0,0);
+      break;
+    case 'lastweek':
+      ceiling = new Date(now);
+      ceiling.setDate(ceiling.getDate() - ceiling.getDay());
+      ceiling.setHours(0,0,0,0);
+      cutoff = new Date(ceiling - 7*24*3600*1000);
+      return RAW_DATA.filter(d => { const t = parseTS(d); return t && t >= cutoff && t < ceiling; });
+    case 'month':
+      cutoff = new Date(now.getFullYear(), now.getMonth(), 1); break;
+    case 'all': cutoff = new Date(0); break;
+    default: cutoff = new Date(now - 5*3600*1000);
+  }
+  return RAW_DATA.filter(d => { const t = parseTS(d); return t && t >= cutoff; });
+}
+
+function dedup(data) {
+  const bucketMs = 5 * 60 * 1000;
+  const out = [];
+  let lastBucket = 0;
+  for (const d of data) {
+    const t = parseTS(d);
+    if (!t) continue;
+    const bucket = Math.floor(t.getTime() / bucketMs);
+    if (bucket !== lastBucket) { out.push(d); lastBucket = bucket; }
+  }
+  return out;
+}
+
+// ── Stats cards ──
+function updateStats() {
+  const latest = RAW_DATA[RAW_DATA.length - 1];
+  if (!latest) return;
+  const s = latest.session || {};
+  const w = latest.weekly || {};
+  const e = latest.extra || {};
+  const sRemain = s.remaining_pct ?? (100 - (s.used || 0));
+  const wRemain = w.remaining_pct ?? (100 - (w.used || 0));
+  const spent = e.spent ?? 0;
+  const cap = e.cap ?? 100;
+  const eRemain = e.remaining_pct ?? Math.round((1 - spent/cap)*100);
+
+  const now = new Date();
+  const sessReset = getSessionResetAt();
+  const weekReset = getWeeklyResetAt();
+  const sessCountdown = sessReset ? fmtDuration(sessReset - now) : '—';
+  const weekCountdown = weekReset ? fmtDuration(weekReset - now) : '—';
+
+  function cc(pct) { return pct >= 60 ? 'green' : pct >= 30 ? 'yellow' : 'red'; }
+
+  document.getElementById('statsRow').innerHTML = `
+    <div class="stat-card">
+      <div class="label">Session</div>
+      <div class="value ${cc(sRemain)}">${Math.round(sRemain)}%</div>
+      <div class="sub">resets in ${sessCountdown}</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Weekly</div>
+      <div class="value ${cc(wRemain)}">${Math.round(wRemain)}%</div>
+      <div class="sub">resets in ${weekCountdown}</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Extra Spend</div>
+      <div class="value ${cc(eRemain)}">$${spent.toFixed(2)}</div>
+      <div class="sub">of $${cap.toFixed(0)} cap</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Extra Remaining</div>
+      <div class="value ${cc(eRemain)}">$${(cap - spent).toFixed(2)}</div>
+      <div class="sub">${eRemain}% of budget left</div>
+    </div>
+  `;
+  const ts = parseTS(latest);
+  document.getElementById('lastUpdated').textContent = ts ? `Updated ${ts.toLocaleString()}` : '';
+}
+
+function setupRangeButtons() {
+  document.querySelectorAll('#rangeButtons button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#rangeButtons button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderAll(btn.dataset.range);
+    });
+  });
+}
+
+// ── Charts ──
+let sessionChartObj = null;
+let weeklyChartObj = null;
+let spendChartObj = null;
+
+function makeResetAnnotation(resetDate, label) {
+  if (!resetDate || isNaN(resetDate)) return {};
+  return {
+    annotation: {
+      annotations: {
+        resetLine: {
+          type: 'line',
+          xMin: resetDate,
+          xMax: resetDate,
+          borderColor: 'rgba(255,255,255,0.25)',
+          borderWidth: 1.5,
+          borderDash: [4, 4],
+          label: {
+            display: true,
+            content: label,
+            position: 'start',
+            backgroundColor: 'rgba(40,40,40,0.9)',
+            color: '#aaa',
+            font: { size: 11 },
+            padding: 4,
+          }
+        }
+      }
+    }
+  };
+}
+
+function renderAll(range) {
+  renderSessionChart(range);
+  renderWeeklyChart(range);
+  renderSpendChart(); // Always shows current month
+}
+
+function renderSessionChart(range) {
+  const data = dedup(filterByRange(range));
+  if (data.length === 0) return;
+
+  const timestamps = data.map(d => parseTS(d));
+  const sessionData = data.map(d => {
+    const s = d.session || {};
+    return s.remaining_pct ?? (100 - (s.used || 0));
+  });
+
+  const timeUnit = ['session','today','24h'].includes(range) ? 'hour' : 'day';
+  const sessReset = getSessionResetAt();
+  const now = new Date();
+
+  // Update chart title with countdown
+  const titleEl = document.getElementById('sessionChartTitle');
+  const subEl = document.getElementById('sessionChartSub');
+  if (range === 'session' && sessReset) {
+    titleEl.textContent = `Session Usage — resets in ${fmtDuration(sessReset - now)}`;
+    subEl.textContent = `Session window (5h) · Resets at ${sessReset.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'})}`;
+  } else if (range === 'week') {
+    const wr = getWeeklyResetAt();
+    titleEl.textContent = wr ? `Usage This Week — resets in ${fmtDuration(wr - now)}` : 'Usage This Week';
+    subEl.textContent = 'Session usage over the current week';
+  } else {
+    titleEl.textContent = 'Session Usage';
+    subEl.textContent = 'Usage remaining — higher is better';
+  }
+
+  // Reset annotation for session view
+  const annotationPlugin = (range === 'session' && sessReset)
+    ? makeResetAnnotation(sessReset, `Reset ${sessReset.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'})}`)
+    : {};
+
+  const ctx = document.getElementById('sessionChart').getContext('2d');
+  if (sessionChartObj) sessionChartObj.destroy();
+  sessionChartObj = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: timestamps,
+      datasets: [{
+        label: 'Session %',
+        data: sessionData,
+        borderColor: '#5ac8fa',
+        backgroundColor: 'rgba(90,200,250,0.1)',
+        borderWidth: 2, pointRadius: 0, pointHitRadius: 8, tension: 0.3, fill: true,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#222', titleColor: '#fff', bodyColor: '#ccc',
+          borderColor: '#444', borderWidth: 1,
+          callbacks: { label: ctx => `Session: ${Math.round(ctx.parsed.y)}% remaining` }
+        },
+        ...annotationPlugin,
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: { unit: timeUnit, tooltipFormat: 'MMM d, h:mm a' },
+          grid: { color: '#222' },
+          ticks: { color: '#666', maxRotation: 0, font: { size: 11 } },
+        },
+        y: {
+          min: 0, max: 100,
+          grid: { color: '#222' },
+          ticks: { color: '#666', callback: v => v + '%', stepSize: 25, font: { size: 11 } },
+        }
+      }
+    }
+  });
+}
+
+function renderWeeklyChart(range) {
+  // Weekly chart always shows "this week" data unless Last Week is selected
+  const weekRange = range === 'lastweek' ? 'lastweek' : 'week';
+  const data = dedup(filterByRange(weekRange));
+  if (data.length === 0) return;
+
+  const timestamps = data.map(d => parseTS(d));
+  const weeklyData = data.map(d => {
+    const w = d.weekly || {};
+    return w.remaining_pct ?? (100 - (w.used || 0));
+  });
+
+  const now = new Date();
+  const weekReset = getWeeklyResetAt();
+  const annotationPlugin = (weekRange === 'week' && weekReset)
+    ? makeResetAnnotation(weekReset, `Reset ${weekReset.toLocaleDateString([], {weekday:'short', month:'short', day:'numeric'})}`)
+    : {};
+
+  const ctx = document.getElementById('weeklyChart').getContext('2d');
+  if (weeklyChartObj) weeklyChartObj.destroy();
+  weeklyChartObj = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: timestamps,
+      datasets: [{
+        label: 'Weekly (all models)',
+        data: weeklyData,
+        borderColor: '#f5a623',
+        backgroundColor: 'rgba(245,166,35,0.1)',
+        borderWidth: 2, pointRadius: 0, pointHitRadius: 8, tension: 0.3, fill: true,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#222', titleColor: '#fff', bodyColor: '#ccc',
+          borderColor: '#444', borderWidth: 1,
+          callbacks: { label: ctx => `Weekly: ${Math.round(ctx.parsed.y)}% remaining` }
+        },
+        ...annotationPlugin,
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: { unit: weekRange === 'lastweek' ? 'day' : 'day', tooltipFormat: 'EEE MMM d, h:mm a' },
+          grid: { color: '#222' },
+          ticks: { color: '#666', maxRotation: 0, font: { size: 11 } },
+        },
+        y: {
+          min: 0, max: 100,
+          grid: { color: '#222' },
+          ticks: { color: '#666', callback: v => v + '%', stepSize: 25, font: { size: 11 } },
+        }
+      }
+    }
+  });
+}
+
+function renderSpendChart() {
+  // Extra spend always shows current month
+  const data = dedup(filterByRange('month'));
+  if (data.length === 0) return;
+
+  const timestamps = data.map(d => parseTS(d));
+  const spendData = data.map(d => (d.extra || {}).spent ?? 0);
+  const capData = data.map(d => (d.extra || {}).cap ?? 100);
+
+  const now = new Date();
+  const extraReset = getExtraResetAt();
+  const annotationPlugin = extraReset
+    ? makeResetAnnotation(extraReset, `Reset ${extraReset.toLocaleDateString([], {month:'short', day:'numeric'})}`)
+    : {};
+
+  const ctx = document.getElementById('spendChart').getContext('2d');
+  if (spendChartObj) spendChartObj.destroy();
+  spendChartObj = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: timestamps,
+      datasets: [
+        {
+          label: 'Spent',
+          data: spendData,
+          borderColor: '#ff9500',
+          backgroundColor: 'rgba(255,149,0,0.15)',
+          borderWidth: 2.5, pointRadius: 0, pointHitRadius: 8, tension: 0.3, fill: true,
+        },
+        {
+          label: 'Cap',
+          data: capData,
+          borderColor: '#ff3b3066',
+          borderWidth: 1.5, borderDash: [6, 4], pointRadius: 0, fill: false,
+        },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          position: 'top',
+          labels: { color: '#aaa', boxWidth: 12, padding: 16, font: { size: 12 } }
+        },
+        tooltip: {
+          backgroundColor: '#222', titleColor: '#fff', bodyColor: '#ccc',
+          borderColor: '#444', borderWidth: 1,
+          callbacks: { label: ctx => `${ctx.dataset.label}: $${ctx.parsed.y.toFixed(2)}` }
+        },
+        ...annotationPlugin,
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: { unit: 'day', tooltipFormat: 'MMM d, h:mm a' },
+          grid: { color: '#222' },
+          ticks: { color: '#666', maxRotation: 0, font: { size: 11 } },
+        },
+        y: {
+          min: 0,
+          grid: { color: '#222' },
+          ticks: { color: '#666', callback: v => '$' + v, font: { size: 11 } },
+        }
+      }
+    }
+  });
+}
+
+loadData();
+</script>
+</body>
+</html>

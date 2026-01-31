@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Build artifacts
+data.json
+
+# macOS
+.DS_Store
